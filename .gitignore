@@ -15,11 +15,6 @@ __pycache__/
 # Archivos de salida de Jupyter
 .ipynb_checkpoints/
 
-# Archivos de Excel y datos generados
-*.xlsx
-*.xls
-*.csv
-
 # Archivos temporales del sistema
 .DS_Store
 Thumbs.db

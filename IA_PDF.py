@@ -422,8 +422,6 @@ def main():
     
     if uploaded_files:
         # --- CACHÉ Y GESTIÓN DE ESTADO ---
-        # Creamos un identificador único basado en los nombres de archivo subidos.
-        # Esto nos permite saber si el lote de archivos cambió.
         current_batch_id = sorted([f.name for f in uploaded_files])
         
         if "processed_batch_id" not in st.session_state or st.session_state["processed_batch_id"] != current_batch_id:
@@ -460,15 +458,15 @@ def main():
                     st.error(f"Error procesando {uploaded_file.name}: {str(e)}")
                     errors.append(uploaded_file.name)
             
-            # Guardamos en Session State para que persista
             st.session_state["results_df"] = pd.DataFrame(results) if results else None
             st.session_state["processing_errors"] = errors
-            st.session_state["processed_batch_id"] = current_batch_id # Actualizamos el ID actual
+            st.session_state["processed_batch_id"] = current_batch_id # Actualiza el ID actual
             
             progress_bar.empty()
             status_text.text("Proceso completado!")
         
-        # Recuperar y mostrar Resultados
+        # --- VISUALIZACIÓN (Siempre se ejecuta usando los datos en memoria) ---
+        
         if "results_df" in st.session_state and st.session_state["results_df"] is not None:
             df = st.session_state["results_df"]
             
@@ -479,7 +477,6 @@ def main():
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False, sheet_name='Datos SOAT')
             
-            # El botón de descarga hace un Rerun, pero ahora entrará directo a esta sección sin procesar
             st.download_button(
                 label="Descargar Excel",
                 data=output.getvalue(),
@@ -487,7 +484,6 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
-        # Recuperar y mostrar Errores
         if "processing_errors" in st.session_state and st.session_state["processing_errors"]:
             st.warning(f"Archivos con errores: {', '.join(st.session_state['processing_errors'])}")
 
