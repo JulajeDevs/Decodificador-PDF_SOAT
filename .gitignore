@@ -23,7 +23,6 @@ Thumbs.db
 *.log
 
 # Archivos de Streamlit
-.streamlit/
 
 # Archivos de configuración de entorno
 .env

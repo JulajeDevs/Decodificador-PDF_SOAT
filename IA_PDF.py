@@ -2,6 +2,7 @@ import re
 import pdfplumber
 import pandas as pd
 import streamlit as st
+import gc
 from io import BytesIO
 
 # Cargar tipos de documentos
@@ -9,8 +10,7 @@ try:
     identificacion = pd.read_excel("Tipo_Documentos.xlsx")
     tipos_identificacion = identificacion["TipoDocumento"].tolist()
 except FileNotFoundError:
-    st.error("No se encontró el archivo 'Tipo_Documentos.xlsx'. Asegúrate de incluirlo.")
-    tipos_identificacion = []
+    tipos_identificacion = ["CC", "TI", "CE", "RC", "PA", "AS", "MS", "NU"]
 
 # --- FUNCIONES DE EXTRACCIÓN POR ASEGURADORA ---
 
@@ -208,7 +208,7 @@ def bolivar(text):
     data["Fecha Siniestro"] = match_date.group(1) if match_date else "No encontrado"
     return data
 
-def seg_mundial(text):
+def seg_mundial(text, pdf=None):
     data = {
         "Aseguradora": "Seguros Mundial",
         "Nombres y Apellidos": "No encontrado",
@@ -218,101 +218,113 @@ def seg_mundial(text):
         "Cobertura": "No encontrado",
         "Saldo Disponible": "No encontrado"
     }
+    
+    found_in_table = False
 
-    # --- CASO 1: CERTIFICADO SIN RECLAMACIONES ---
-    if "no se identifican reclamaciones" in text.lower():
-        data["Estado Cobertura"] = "SIN RECLAMACIONES"
-        
-        date_match = re.search(r"fecha\s+de\s+accidente\s+(\d{2}/\d{2}/\d{4})", text, re.IGNORECASE)
-        if date_match:
-            data["Fecha Siniestro"] = date_match.group(1)
-            
-        id_match = re.search(r"documento\s+([A-Z]{2}-?\d+)", text, re.IGNORECASE)
-        if id_match:
-            data["Numero de Documento"] = id_match.group(1)
-            
-        placa_match = re.search(r"placas\s+([A-Z0-9]+)", text, re.IGNORECASE)
-        if placa_match:
-             pass
-
-        return data
-
-    # --- CASO 2: CERTIFICADO CON TABLA DE PAGOS ---
-    lines = text.split('\n')
-    found_medical_expenses = False
-
-    for line in lines:
-        clean_line = re.sub(r'[",]', ' ', line).strip()
-        
-        if 'GASTOS MEDICOS' in clean_line.upper():
-            found_medical_expenses = True
-            
-            pattern = re.compile(
-                r"(?P<nombre>.+?)\s+"                 
-                r"GASTOS\s+MEDICOS\s+"                
-                r"(?P<fecha>\d{2}/\d{2}/\d{4})\s+"    
-                r"(?P<info_intermedia>.*?)\s+"        
-                r"(?P<estado>COBERTURA(?:\s+NO)?(?:\s+AGOTADA)?)" 
-                r"(?P<resto>.*)", 
-                re.IGNORECASE
-            )
-            
-            match = pattern.search(clean_line)
-            
-            if match:
-                raw_name = match.group("nombre").strip()
-                raw_name = re.sub(r'^SEGUROS\s+MUNDIAL\s*', '', raw_name, flags=re.IGNORECASE).strip()
-                data["Nombres y Apellidos"] = raw_name
+    # --- ESTRATEGIA 1: EXTRACCIÓN POR TABLAS ---
+    if pdf:
+        try:
+            for page in pdf.pages:
+                tables = page.extract_tables()
                 
-                data["Fecha Siniestro"] = match.group("fecha").strip()
-                
-                info_intermedia = match.group("info_intermedia").strip()
-                policy_search = re.search(r"([\d\-]{6,})", info_intermedia)
-                if policy_search:
-                     data["Numero de Poliza"] = policy_search.group(1)
-                else:
-                     data["Numero de Poliza"] = info_intermedia 
-                
-                status_raw = match.group("estado").strip().upper()
-                if "NO" in status_raw:
-                    data["Estado Cobertura"] = "NO AGOTADO"
-                else:
-                    data["Estado Cobertura"] = "AGOTADO"
-                
-                valor_raw = match.group("resto").strip()
-                
-                if valor_raw:
-                    amounts = re.findall(r'\$\s*[\d\.,\s]+(?=(?:\$|$))', valor_raw)
-                    clean_amounts = []
-                    for amt in amounts:
-                        amt_clean = amt.replace('$', '').strip()
-                        amt_clean = re.sub(r'[\s,]+00$', '', amt_clean)
-                        clean_amounts.append(f"$ {amt_clean}")
+                for table in tables:
+                    header_idx = -1
+                    col_indices = {}
                     
-                    if len(clean_amounts) > 0:
-                        data["Cobertura"] = clean_amounts[0]
+                    for i, row in enumerate(table):
+                        row_clean = [str(c).upper().replace('\n', ' ') if c else "" for c in row]
                         
-                    if len(clean_amounts) > 1:
-                        saldo_str = clean_amounts[1]
-                        saldo_val = re.sub(r'[^\d]', '', saldo_str)
-                        try:
-                            if int(saldo_val) > 0:
-                                data["Saldo Disponible"] = saldo_str
-                            else:
-                                data["Saldo Disponible"] = "No encontrado"
-                        except:
-                            data["Saldo Disponible"] = saldo_str
-                    else:
-                         data["Saldo Disponible"] = "No encontrado"
-            else:
-                st.warning(f"⚠️ Fila 'GASTOS MEDICOS' detectada pero con formato inusual: {clean_line}")
-            
-            break
-            
-    if not found_medical_expenses:
-        header_policy = re.search(r"póliza.*?(\d{13,})", text, re.IGNORECASE)
-        if header_policy:
-             data["Numero de Poliza"] = header_policy.group(1)
+                        if "AFECTADO" in row_clean and "AMPARO" in row_clean:
+                            header_idx = i
+                            # Mapear columnas dinámicamente
+                            try:
+                                col_indices["AFECTADO"] = row_clean.index("AFECTADO")
+                                col_indices["AMPARO"] = row_clean.index("AMPARO")
+                                # Buscar otras columnas aproximadas
+                                for idx, col_name in enumerate(row_clean):
+                                    if "FECHA" in col_name and "ACCIDENTE" in col_name: col_indices["FECHA"] = idx
+                                    if "POLIZA" in col_name: col_indices["POLIZA"] = idx
+                                    if "ESTADO" in col_name: col_indices["ESTADO"] = idx
+                                    if "TOPE" in col_name: col_indices["TOPE"] = idx
+                                    if "SALDO" in col_name: col_indices["SALDO"] = idx
+                            except:
+                                pass
+                            break
+                    
+                    if header_idx != -1:
+                        for row in table[header_idx+1:]:
+                            idx_afectado = col_indices.get("AFECTADO", 0)
+                            idx_amparo = col_indices.get("AMPARO", 1)
+                            
+                            if len(row) > idx_amparo:
+                                amparo_val = str(row[idx_amparo]).upper() if row[idx_amparo] else ""
+                                if "GASTOS MEDICOS" in amparo_val:
+                                    # --- EXTRACCIÓN DEL NOMBRE (CELDA COMPLETA) ---
+                                    raw_name = row[idx_afectado]
+                                    if raw_name:
+                                        full_name = raw_name.replace('\n', ' ').strip()
+                                        full_name = re.sub(r'^SEGUROS\s+MUNDIAL\s*', '', full_name, flags=re.IGNORECASE).strip()
+                                        data["Nombres y Apellidos"] = full_name
+                                        found_in_table = True
+
+                                    # --- EXTRACCIÓN DEL RESTO DE DATOS (MISMA FILA) ---
+                                    # Fecha
+                                    if "FECHA" in col_indices and len(row) > col_indices["FECHA"]:
+                                        val = row[col_indices["FECHA"]]
+                                        if val: data["Fecha Siniestro"] = val.replace('\n', ' ').strip()
+                                    
+                                    # Póliza
+                                    if "POLIZA" in col_indices and len(row) > col_indices["POLIZA"]:
+                                        val = row[col_indices["POLIZA"]]
+                                        if val: data["Numero de Poliza"] = val.replace('\n', ' ').strip()
+                                    
+                                    # Cobertura (Tope)
+                                    if "TOPE" in col_indices and len(row) > col_indices["TOPE"]:
+                                        val = row[col_indices["TOPE"]]
+                                        if val: 
+                                            clean_val = val.replace('\n', ' ').strip()
+                                            clean_val = re.sub(r',00$', '', clean_val)
+                                            data["Cobertura"] = clean_val
+
+                                    # Estado
+                                    if "ESTADO" in col_indices and len(row) > col_indices["ESTADO"]:
+                                        val = str(row[col_indices["ESTADO"]]).upper()
+                                        if val:
+                                            if "NO" in val and "AGOTADA" in val:
+                                                data["Estado Cobertura"] = "NO AGOTADO"
+                                            elif "AGOTADA" in val:
+                                                data["Estado Cobertura"] = "AGOTADO"
+                                    
+                                    if "SALDO" in col_indices and len(row) > col_indices["SALDO"]:
+                                        val = row[col_indices["SALDO"]]
+                                        if val:
+                                            try:
+                                                saldo_clean = val.replace('\n', ' ').strip()
+                                                # Validar si es número positivo
+                                                num_chk = int(re.sub(r'[^\d]', '', saldo_clean))
+                                                
+                                                if num_chk > 0: # Si es mayor a 0, se guarda
+                                                    data["Saldo Disponible"] = saldo_clean
+                                                else: # Si es 0 o negativo, "No encontrado"
+                                                    data["Saldo Disponible"] = "No encontrado"
+                                            except:
+                                                pass
+                                    
+                                    return data
+        except Exception as e:
+            pass
+
+    # --- ESTRATEGIA 2: REGEX (FALLBACK) ---
+    if not found_in_table:
+        if "no se identifican reclamaciones" in text.lower():
+            data["Estado Cobertura"] = "SIN RECLAMACIONES"
+            date_match = re.search(r"fecha\s+de\s+accidente\s+(\d{2}/\d{2}/\d{4})", text, re.IGNORECASE)
+            if date_match: data["Fecha Siniestro"] = date_match.group(1)
+            header_name = re.search(r"Afectado\s*\n\s*([A-ZÁÉÍÓÚÑ\s]+?)(?=\n)", text, re.IGNORECASE)
+            if header_name: data["Nombres y Apellidos"] = header_name.group(1).strip()
+        else:
+            header_policy = re.search(r"póliza.*?(\d{13,})", text, re.IGNORECASE)
+            if header_policy: data["Numero de Poliza"] = header_policy.group(1)
 
     return data
 
@@ -380,7 +392,7 @@ def solidaria(text):
     return data
 
 # Extraction process 
-def extract_data(text, pdf_file):
+def extract_data(text, pdf_file, pdf_obj=None):
     if re.search(r"MAPFRE SEGUROS GENERALES DE COLOMBIA", text, re.IGNORECASE):
         data = Mapfre(text)
         return {**data, "Nombre archivo": pdf_file}
@@ -400,7 +412,8 @@ def extract_data(text, pdf_file):
         data = bolivar(text)
         return {**data, "Nombre archivo":pdf_file}
     elif re.search(r"SEGUROS MUNDIAL", text, re.IGNORECASE):
-        data = seg_mundial(text)
+        # AQUÍ ESTÁ EL CAMBIO CLAVE: Pasamos el objeto PDF
+        data = seg_mundial(text, pdf_obj)
         return {**data, "Nombre archivo":pdf_file}
     elif re.search(r"AXA COLPATRIA SEGUROS", text, re.IGNORECASE):
         data = colpatria_axa(text)
@@ -439,33 +452,35 @@ def main():
                     status_text.text(f"Procesando archivo {i+1} de {len(uploaded_files)}: {uploaded_file.name}")
                     
                     text = ""
-                    # Es importante leer desde el inicio
                     uploaded_file.seek(0)
                     with pdfplumber.open(uploaded_file) as pdf:
                         for page in pdf.pages:
                             page_text = page.extract_text()
                             if page_text:
                                 text += page_text + "\n"
+                        
+                        if not text.strip():
+                            st.warning(f"El archivo {uploaded_file.name} no contiene texto extraible o es una imagen escaneada.")
+                            continue
+                        
+                        data = extract_data(text, uploaded_file.name, pdf)
+                        results.append(data)
                     
-                    if not text.strip():
-                        st.warning(f"El archivo {uploaded_file.name} no contiene texto extraible o es una imagen escaneada.")
-                        continue
-                    
-                    data = extract_data(text, uploaded_file.name)
-                    results.append(data)
-                    
+                    if i % 10 == 0:
+                        gc.collect()
+
                 except Exception as e:
                     st.error(f"Error procesando {uploaded_file.name}: {str(e)}")
                     errors.append(uploaded_file.name)
             
             st.session_state["results_df"] = pd.DataFrame(results) if results else None
             st.session_state["processing_errors"] = errors
-            st.session_state["processed_batch_id"] = current_batch_id # Actualiza el ID actual
+            st.session_state["processed_batch_id"] = current_batch_id
             
             progress_bar.empty()
             status_text.text("Proceso completado!")
         
-        # --- VISUALIZACIÓN (Siempre se ejecuta usando los datos en memoria) ---
+        # --- VISUALIZACIÓN ---
         
         if "results_df" in st.session_state and st.session_state["results_df"] is not None:
             df = st.session_state["results_df"]
