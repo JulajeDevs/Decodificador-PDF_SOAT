@@ -1,0 +1,39 @@
+# Entorno virtual de Python
+venv/
+ENV/
+env/
+.venv/
+
+# Archivos de configuración de VSCode
+.vscode/
+
+# Archivos temporales de Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Archivos de salida de Jupyter
+.ipynb_checkpoints/
+
+# Archivos de Excel y datos generados
+*.xlsx
+*.xls
+*.csv
+
+# Archivos temporales del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de log
+*.log
+
+# Archivos de Streamlit
+.streamlit/
+
+# Archivos de configuración de entorno
+.env
+.env.*
+
+# Otros archivos temporales
+*.bak
+*.tmp
