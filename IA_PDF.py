@@ -1,9 +1,11 @@
 import re
+import gc
+import unicodedata
+from io import BytesIO
+
 import pdfplumber
 import pandas as pd
 import streamlit as st
-import gc
-from io import BytesIO
 
 # Cargar tipos de documentos
 
@@ -764,88 +766,254 @@ def colpatria_axa(text):
     return data
 
 
-def solidaria(text):
-    data = {}
+def solidaria(text, pdf=None):
+    data = {
+        "Nombres y Apellidos": "No encontrado",
+        "Identificación": "No encontrado",
+        "Tipo Identificación": "No encontrado",
+        "Numero Poliza": "No encontrado",
+        "Fecha Siniestro": "No encontrado",
+        "Estado Cobertura": "No encontrado",
+        "Cobertura": "No encontrado",
+        "Valor Pagado": "No encontrado",
+    }
 
-    name_match = re.search(
-        r"Víctima\s+Identificación\s+Fecha\s+accidente\s+([A-ZÁÉÍÓÚÑ\s]+?)\s+(\d+)\s+(\d{2}/\d{2}/\d{4})",
-        text,
-        re.IGNORECASE | re.DOTALL,
+    def _clean_cell(value):
+        if value is None:
+            return ""
+        return re.sub(r"\s+", " ", str(value)).strip()
+
+    def _normalize_header(value):
+        cleaned = _clean_cell(value).upper()
+        normalized = unicodedata.normalize("NFD", cleaned)
+        return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+    def _get_by_index(row, idx):
+        if idx is None or idx < 0 or idx >= len(row):
+            return ""
+        return _clean_cell(row[idx])
+
+    def _find_idx(headers, condition):
+        for idx, header in enumerate(headers):
+            if condition(header):
+                return idx
+        return None
+
+    def _format_money(value):
+        money_text = _clean_cell(value)
+        if not money_text:
+            return "No encontrado"
+        number_match = re.search(r"[\d][\d\.,]*", money_text)
+        if not number_match:
+            return "No encontrado"
+        digits = re.sub(r"[^\d]", "", number_match.group(0))
+        if not digits:
+            return "No encontrado"
+        return f"${int(digits):,}".replace(",", ".")
+
+    def _normalize_estado(value):
+        estado = _normalize_header(value)
+        if not estado:
+            return "No encontrado"
+        has_agotado = "AGOTADO" in estado or "AGOTADA" in estado
+        has_no = (
+            "NO AGOTADO" in estado or "NO AGOTADA" in estado or " NO " in f" {estado} "
+        )
+        if has_agotado and not has_no:
+            return "AGOTADO"
+        if has_agotado and has_no:
+            return "NO AGOTADO"
+        return estado
+
+    def _is_victim_header(header):
+        return "VICTIMA" in header or ("CTIMA" in header and header.startswith("V"))
+
+    policy_pair_match = re.search(
+        r"SOAT\s+(\d+)\s*-\s*(\d+)", text, re.IGNORECASE | re.DOTALL
     )
-
-    if name_match:
-        data["Nombres y Apellidos"] = name_match.group(1).strip()
-        data["Identificación"] = name_match.group(2).strip()
-        fecha_raw = name_match.group(3).strip()
-        data["Fecha Siniestro"] = fecha_raw.replace("/", "-")
+    if policy_pair_match:
+        data["Numero Poliza"] = policy_pair_match.group(2).strip()
     else:
-        data["Nombres y Apellidos"] = "No encontrado"
-        data["Identificación"] = "No encontrado"
-        data["Fecha Siniestro"] = "No encontrado"
-
-    data["Tipo Identificación"] = "CC"
-
-    policy_match = re.search(
-        r"póliza\s+de\s+Seguro\s+Obligatorio.*?SOAT\s+No\.?\s*(\d+)",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    data["Numero Poliza"] = (
-        policy_match.group(1).strip() if policy_match else "No encontrado"
-    )
-
-    status_match = re.search(
-        r"Estado\s+([A-Za-zÁÉÍÓÚÑáéíóúñ\s]+?)(?:\n|$)", text, re.IGNORECASE
-    )
-
-    if status_match:
-        estado = status_match.group(1).strip().upper()
-        if "AGOTADO" in estado and "NO" not in estado:
-            data["Estado Cobertura"] = "AGOTADO"
+        policy_single_match = re.search(
+            r"SOAT(?:\s+No\.?)?\s*-\s*(\d+)", text, re.IGNORECASE | re.DOTALL
+        )
+        if policy_single_match:
+            data["Numero Poliza"] = policy_single_match.group(1).strip()
         else:
-            data["Estado Cobertura"] = "NO AGOTADO"
-    else:
-        data["Estado Cobertura"] = "No encontrado"
+            policy_no_match = re.search(
+                r"SOAT\s+No\.?\s*(\d+)", text, re.IGNORECASE | re.DOTALL
+            )
+            if policy_no_match:
+                data["Numero Poliza"] = policy_no_match.group(1).strip()
 
-    coverage_match = re.search(
-        r"Valor\s+cobertura\s+pesos\s+Valor\s+cancelado.*?\$\s*([\d\.,]+)\s+\$",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
+    if pdf:
+        try:
+            victim_table_found = False
+            coverage_table_found = False
 
-    if not coverage_match:
+            for page in pdf.pages:
+                tables = page.extract_tables() or []
+
+                for table in tables:
+                    if not table:
+                        continue
+
+                    for row_idx, row in enumerate(table):
+                        if not row:
+                            continue
+
+                        headers = [_normalize_header(cell) for cell in row]
+
+                        idx_name = _find_idx(headers, _is_victim_header)
+                        idx_doc = _find_idx(headers, lambda h: "DOCUMENTO" in h)
+                        idx_ident = _find_idx(headers, lambda h: "IDENTIFICACION" in h)
+                        idx_siniestro = _find_idx(headers, lambda h: "SINIESTRO" in h)
+                        idx_date = _find_idx(
+                            headers, lambda h: "FECHA" in h and "ACCIDENTE" in h
+                        )
+
+                        has_victim_headers = (
+                            idx_name is not None
+                            and idx_date is not None
+                            and (
+                                idx_doc is not None
+                                or idx_ident is not None
+                                or idx_siniestro is not None
+                            )
+                        )
+                        if has_victim_headers and not victim_table_found:
+                            for candidate_row in table[row_idx + 1 :]:
+                                if not candidate_row:
+                                    continue
+                                name_value = _get_by_index(candidate_row, idx_name)
+                                doc_value = _get_by_index(
+                                    candidate_row,
+                                    idx_doc if idx_doc is not None else idx_ident,
+                                )
+                                siniestro_value = _get_by_index(
+                                    candidate_row, idx_siniestro
+                                )
+                                date_value = _get_by_index(candidate_row, idx_date)
+                                if not (
+                                    name_value
+                                    or doc_value
+                                    or siniestro_value
+                                    or date_value
+                                ):
+                                    continue
+
+                                if name_value:
+                                    data["Nombres y Apellidos"] = re.sub(
+                                        r"\s+", " ", name_value
+                                    ).strip()
+                                if doc_value:
+                                    data["Identificación"] = re.sub(
+                                        r"\s+", "", doc_value
+                                    ).replace(".", "")
+                                elif siniestro_value:
+                                    siniestro_digits = re.sub(
+                                        r"[^\d]", "", siniestro_value
+                                    )
+                                    if len(siniestro_digits) >= 7:
+                                        data["Identificación"] = siniestro_digits
+                                if date_value:
+                                    date_match = re.search(
+                                        r"\d{2}[/-]\d{2}[/-]\d{4}", date_value
+                                    )
+                                    data["Fecha Siniestro"] = (
+                                        date_match.group(0).replace("-", "/")
+                                        if date_match
+                                        else date_value
+                                    )
+                                victim_table_found = True
+                                break
+
+                        has_coverage_headers = (
+                            any("VALOR COBERTURA" in h for h in headers)
+                            and any("VALOR CANCELADO" in h for h in headers)
+                            and any("ESTADO" in h for h in headers)
+                        )
+                        if has_coverage_headers and not coverage_table_found:
+                            idx_cov = _find_idx(
+                                headers, lambda h: "VALOR COBERTURA" in h
+                            )
+                            idx_paid = _find_idx(
+                                headers, lambda h: "VALOR CANCELADO" in h
+                            )
+                            idx_status = _find_idx(headers, lambda h: "ESTADO" in h)
+
+                            for candidate_row in table[row_idx + 1 :]:
+                                if not candidate_row:
+                                    continue
+                                cov_value = _get_by_index(candidate_row, idx_cov)
+                                paid_value = _get_by_index(candidate_row, idx_paid)
+                                status_value = _get_by_index(candidate_row, idx_status)
+                                if not (cov_value or paid_value or status_value):
+                                    continue
+
+                                data["Cobertura"] = _format_money(cov_value)
+                                data["Valor Pagado"] = _format_money(paid_value)
+                                data["Estado Cobertura"] = _normalize_estado(
+                                    status_value
+                                )
+                                coverage_table_found = True
+                                break
+
+                    if victim_table_found and coverage_table_found:
+                        break
+
+                if victim_table_found and coverage_table_found:
+                    break
+        except Exception:
+            pass
+
+    if data["Nombres y Apellidos"] == "No encontrado":
+        victim_match = re.search(
+            r"V\S*CTIMA\s+(?:DOCUMENTO|IDENTIFICACI[ÓO]N|SINIESTRO)\s+FECHA\s+ACCIDENTE\s+(.+?)\s+(\d{5,15})\s+(\d{2}/\d{2}/\d{4})",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if victim_match:
+            data["Nombres y Apellidos"] = re.sub(
+                r"\s+", " ", victim_match.group(1).strip()
+            )
+            data["Identificación"] = victim_match.group(2).strip()
+            data["Fecha Siniestro"] = victim_match.group(3).strip()
+
+    if data["Cobertura"] == "No encontrado":
         coverage_match = re.search(
-            r"pesos.*?\$\s*([\d\.,]+)\s+\$\s*[\d\.,]+\s+\$",
+            r"VALOR\s+COBERTURA\s+PESOS.*?\$\s*([\d\.,]+)",
             text,
             re.IGNORECASE | re.DOTALL,
         )
+        if coverage_match:
+            data["Cobertura"] = _format_money(coverage_match.group(1))
 
-    if coverage_match:
-        cobertura_raw = coverage_match.group(1).strip()
-        cobertura_num = int(cobertura_raw.replace(".", "").replace(",", ""))
-        data["Cobertura"] = f"${cobertura_num:,}".replace(",", ".")
-    else:
-        data["Cobertura"] = "No encontrado"
-
-    paid_match = re.search(
-        r"Valor\s+cancelado\s+Valor\s+disponible.*?\$\s*([\d\.,]+)\s+\$",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-
-    if not paid_match:
+    if data["Valor Pagado"] == "No encontrado":
         paid_match = re.search(
-            r"cancelado.*?\$\s*([\d\.,]+)\s+\$\s*[\d\.,]+\s+(?:No\s+agotado|Agotado)",
+            r"VALOR\s+CANCELADO.*?\$\s*([\d\.,]+)",
             text,
             re.IGNORECASE | re.DOTALL,
         )
+        if paid_match:
+            data["Valor Pagado"] = _format_money(paid_match.group(1))
 
-    if paid_match:
-        valor_raw = paid_match.group(1).strip()
-        valor_num = int(valor_raw.replace(".", "").replace(",", ""))
-        data["Valor Pagado"] = f"${valor_num:,}".replace(",", ".")
-    else:
-        data["Valor Pagado"] = "No encontrado"
+    if data["Estado Cobertura"] == "No encontrado":
+        status_match = re.search(
+            r"ESTADO\s+(AGOTADO|NO\s+AGOTADO|NO\s+AGOTADA|AGOTADA)",
+            text,
+            re.IGNORECASE,
+        )
+        if status_match:
+            data["Estado Cobertura"] = _normalize_estado(status_match.group(1))
+        else:
+            generic_status = re.search(
+                r"\b(NO\s+AGOTAD[AO]|AGOTAD[AO])\b",
+                text,
+                re.IGNORECASE,
+            )
+            if generic_status:
+                data["Estado Cobertura"] = _normalize_estado(generic_status.group(1))
 
     return data
 
@@ -1082,7 +1250,7 @@ def extract_data(text, pdf_file, pdf_obj=None):
         data = seg_estados(text)
         return {**data, "Nombre archivo": pdf_file, "Aseguradora": "SEGUROS DEL ESTADO"}
     elif re.search(r"ASEGURADORA SOLIDARIA DE COLOMBIA", text):
-        data = solidaria(text)
+        data = solidaria(text, pdf_obj)
         return {
             **data,
             "Nombre archivo": pdf_file,
