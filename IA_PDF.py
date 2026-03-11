@@ -42,6 +42,30 @@ def convertir_fecha_texto(fecha_raw):
     return None
 
 
+def extraer_valor_en_pesos(valor_raw):
+    if not valor_raw:
+        return None
+
+    texto = str(valor_raw).replace("\xa0", " ").strip()
+
+    for patron in (
+        r"Pesos:\s*\$?\s*([\d\.,]+)",
+        r"\$\s*([\d\.,]+)",
+        r"([\d]{1,3}(?:\.\d{3})*(?:,\d{2})?)",
+    ):
+        match = re.search(patron, texto, re.IGNORECASE)
+        if not match:
+            continue
+
+        valor = match.group(1).strip()
+        valor_entero = valor.split(",")[0].replace(".", "").strip()
+
+        if valor_entero.isdigit():
+            return f"${int(valor_entero):,}".replace(",", ".")
+
+    return None
+
+
 # --- FUNCIONES DE EXTRACCIÓN POR ASEGURADORA ---
 
 
@@ -514,6 +538,8 @@ def seg_mundial(text, pdf=None):
                                         col_indices["ESTADO"] = idx
                                     if "TOPE" in col_name:
                                         col_indices["TOPE"] = idx
+                                    if "PAGADO" in col_name:
+                                        col_indices["PAGADO"] = idx
                                     if "SALDO" in col_name:
                                         col_indices["SALDO"] = idx
                             except:
@@ -575,9 +601,22 @@ def seg_mundial(text, pdf=None):
                                     ):
                                         val = row[col_indices["TOPE"]]
                                         if val:
-                                            clean_val = val.replace("\n", " ").strip()
-                                            clean_val = re.sub(r",00$", "", clean_val)
-                                            data["Cobertura"] = clean_val
+                                            data["Cobertura"] = (
+                                                extraer_valor_en_pesos(val)
+                                                or val.replace("\n", " ").strip()
+                                            )
+
+                                    # Valor pagado
+                                    if (
+                                        "PAGADO" in col_indices
+                                        and len(row) > col_indices["PAGADO"]
+                                    ):
+                                        val = row[col_indices["PAGADO"]]
+                                        if val:
+                                            data["Valor Pagado"] = (
+                                                extraer_valor_en_pesos(val)
+                                                or val.replace("\n", " ").strip()
+                                            )
 
                                     # Estado
                                     if (
@@ -628,7 +667,7 @@ def seg_mundial(text, pdf=None):
             else:
                 data["Estado Cobertura"] = "NO AGOTADO"
 
-        if "no se identifican reclamaciones" in text.lower():
+        if re.search(r"no\s+se\s+identifican\s+reclamaciones", text, re.IGNORECASE):
             data["Estado Cobertura"] = "SIN RECLAMACIONES"
 
         date_match = re.search(
