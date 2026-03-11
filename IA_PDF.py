@@ -744,17 +744,26 @@ def colpatria_axa(text):
     else:
         data["Fecha Siniestro"] = None
 
-    policy_match = re.search(
-        r"(?:No\.\s*Póliza\s*:\s*([\d\-]+)|número\s+([\d\-]+)(?=\s+placa))",
+    policy_number = "No encontrado"
+
+    policy_match_new = re.search(
+        r"número\s+AT\s+\d+\s*-\s*(\d+)(?=\s+placa)",
         text,
         re.IGNORECASE,
     )
-    policy_number = "No encontrado"
-    if policy_match:
-        if policy_match.group(1):
-            policy_number = policy_match.group(1).strip()
-        elif policy_match.group(2):
-            policy_number = policy_match.group(2).strip()
+    if policy_match_new:
+        policy_number = policy_match_new.group(1).strip()
+    else:
+        policy_match = re.search(
+            r"(?:No\.\s*Póliza\s*:\s*([\d\-]+)|número\s+([\d\-]+)(?=\s+placa))",
+            text,
+            re.IGNORECASE,
+        )
+        if policy_match:
+            if policy_match.group(1):
+                policy_number = policy_match.group(1).strip()
+            elif policy_match.group(2):
+                policy_number = policy_match.group(2).strip()
 
     data["Numero Poliza"] = policy_number
 
