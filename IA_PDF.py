@@ -66,6 +66,16 @@ def extraer_valor_en_pesos(valor_raw):
     return None
 
 
+def normalizar_texto_busqueda(valor_raw):
+    if not valor_raw:
+        return ""
+
+    texto = str(valor_raw).replace("\xa0", " ").replace("\n", " ").strip().upper()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    return re.sub(r"\s+", " ", texto)
+
+
 # --- FUNCIONES DE EXTRACCIÓN POR ASEGURADORA ---
 
 
@@ -547,92 +557,94 @@ def seg_mundial(text, pdf=None):
                             break
 
                     if header_idx != -1:
+                        def cargar_datos_desde_fila(row_data):
+                            raw_name = row_data[idx_afectado]
+                            if raw_name:
+                                full_name = raw_name.replace("\n", " ").strip()
+                                full_name = re.sub(
+                                    r"^SEGUROS\s+MUNDIAL\s*",
+                                    "",
+                                    full_name,
+                                    flags=re.IGNORECASE,
+                                ).strip()
+                                data["Nombres y Apellidos"] = full_name
+
+                            if (
+                                "FECHA" in col_indices
+                                and len(row_data) > col_indices["FECHA"]
+                            ):
+                                val = row_data[col_indices["FECHA"]]
+                                if val:
+                                    data["Fecha Siniestro"] = val.replace(
+                                        "\n", " "
+                                    ).strip()
+
+                            if (
+                                "POLIZA" in col_indices
+                                and len(row_data) > col_indices["POLIZA"]
+                            ):
+                                val = row_data[col_indices["POLIZA"]]
+                                if val:
+                                    data["Numero Poliza"] = val.replace(
+                                        "\n", " "
+                                    ).strip()
+
+                            if (
+                                "TOPE" in col_indices
+                                and len(row_data) > col_indices["TOPE"]
+                            ):
+                                val = row_data[col_indices["TOPE"]]
+                                if val:
+                                    data["Cobertura"] = (
+                                        extraer_valor_en_pesos(val)
+                                        or val.replace("\n", " ").strip()
+                                    )
+
+                            if (
+                                "PAGADO" in col_indices
+                                and len(row_data) > col_indices["PAGADO"]
+                            ):
+                                val = row_data[col_indices["PAGADO"]]
+                                if val:
+                                    data["Valor Pagado"] = (
+                                        extraer_valor_en_pesos(val)
+                                        or val.replace("\n", " ").strip()
+                                    )
+
+                            if (
+                                "ESTADO" in col_indices
+                                and len(row_data) > col_indices["ESTADO"]
+                            ):
+                                val = str(row_data[col_indices["ESTADO"]]).upper()
+                                if val:
+                                    if "NO" in val and "AGOTADA" in val:
+                                        data["Estado Cobertura"] = "NO AGOTADO"
+                                    elif "AGOTADA" in val:
+                                        data["Estado Cobertura"] = "AGOTADO"
+                                    else:
+                                        data["Estado Cobertura"] = val
+
+                        fila_transporte = None
+
                         for row in table[header_idx + 1 :]:
                             idx_afectado = col_indices.get("AFECTADO", 0)
                             idx_amparo = col_indices.get("AMPARO", 1)
 
                             if len(row) > idx_amparo:
-                                amparo_val = (
-                                    str(row[idx_amparo]).upper()
-                                    if row[idx_amparo]
-                                    else ""
-                                )
+                                amparo_val = normalizar_texto_busqueda(row[idx_amparo])
+
+                                if "GASTOS DE TRANSPORTE" in amparo_val:
+                                    fila_transporte = row
+
                                 if "GASTOS MEDICOS" in amparo_val:
-                                    # --- EXTRACCIÓN DEL NOMBRE ---
-                                    raw_name = row[idx_afectado]
-                                    if raw_name:
-                                        full_name = raw_name.replace("\n", " ").strip()
-                                        full_name = re.sub(
-                                            r"^SEGUROS\s+MUNDIAL\s*",
-                                            "",
-                                            full_name,
-                                            flags=re.IGNORECASE,
-                                        ).strip()
-                                        data["Nombres y Apellidos"] = full_name
-                                        found_in_table = True
-
-                                    # --- EXTRACCIÓN DEL RESTO DE DATOS (MISMA FILA) ---
-                                    # Fecha
-                                    if (
-                                        "FECHA" in col_indices
-                                        and len(row) > col_indices["FECHA"]
-                                    ):
-                                        val = row[col_indices["FECHA"]]
-                                        if val:
-                                            data["Fecha Siniestro"] = val.replace(
-                                                "\n", " "
-                                            ).strip()
-
-                                    # Póliza
-                                    if (
-                                        "POLIZA" in col_indices
-                                        and len(row) > col_indices["POLIZA"]
-                                    ):
-                                        val = row[col_indices["POLIZA"]]
-                                        if val:
-                                            data["Numero Poliza"] = val.replace(
-                                                "\n", " "
-                                            ).strip()
-
-                                    # Cobertura (Tope)
-                                    if (
-                                        "TOPE" in col_indices
-                                        and len(row) > col_indices["TOPE"]
-                                    ):
-                                        val = row[col_indices["TOPE"]]
-                                        if val:
-                                            data["Cobertura"] = (
-                                                extraer_valor_en_pesos(val)
-                                                or val.replace("\n", " ").strip()
-                                            )
-
-                                    # Valor pagado
-                                    if (
-                                        "PAGADO" in col_indices
-                                        and len(row) > col_indices["PAGADO"]
-                                    ):
-                                        val = row[col_indices["PAGADO"]]
-                                        if val:
-                                            data["Valor Pagado"] = (
-                                                extraer_valor_en_pesos(val)
-                                                or val.replace("\n", " ").strip()
-                                            )
-
-                                    # Estado
-                                    if (
-                                        "ESTADO" in col_indices
-                                        and len(row) > col_indices["ESTADO"]
-                                    ):
-                                        val = str(row[col_indices["ESTADO"]]).upper()
-                                        if val:
-                                            if "NO" in val and "AGOTADA" in val:
-                                                data["Estado Cobertura"] = "NO AGOTADO"
-                                            elif "AGOTADA" in val:
-                                                data["Estado Cobertura"] = "AGOTADO"
-                                            else:
-                                                data["Estado Cobertura"] = val
-
+                                    cargar_datos_desde_fila(row)
+                                    found_in_table = True
                                     return data
+
+                        if fila_transporte:
+                            cargar_datos_desde_fila(fila_transporte)
+                            found_in_table = True
+                            return data
         except Exception as e:
             pass
 
