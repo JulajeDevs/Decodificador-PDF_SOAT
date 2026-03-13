@@ -76,6 +76,18 @@ def normalizar_texto_busqueda(valor_raw):
     return re.sub(r"\s+", " ", texto)
 
 
+def limpiar_numero_poliza(valor_raw):
+    if not valor_raw:
+        return None
+
+    texto = str(valor_raw).replace("\xa0", " ").replace("\n", " ").strip()
+    texto = re.sub(r"\s+", " ", texto)
+    texto = re.sub(r"\s*-\s*", "-", texto)
+    texto = re.sub(r"\s*\.\s*", ".", texto)
+    texto = re.sub(r"\.0+$", "", texto)
+    return texto
+
+
 # --- FUNCIONES DE EXTRACCIÓN POR ASEGURADORA ---
 
 
@@ -528,9 +540,7 @@ def seg_mundial(text, pdf=None):
 
                     for i, row in enumerate(table):
                         # Limpieza básica de la fila para buscar cabeceras
-                        row_clean = [
-                            str(c).upper().replace("\n", " ") if c else "" for c in row
-                        ]
+                        row_clean = [normalizar_texto_busqueda(c) for c in row]
 
                         if "AFECTADO" in row_clean and "AMPARO" in row_clean:
                             header_idx = i
@@ -585,9 +595,7 @@ def seg_mundial(text, pdf=None):
                             ):
                                 val = row_data[col_indices["POLIZA"]]
                                 if val:
-                                    data["Numero Poliza"] = val.replace(
-                                        "\n", " "
-                                    ).strip()
+                                    data["Numero Poliza"] = limpiar_numero_poliza(val)
 
                             if (
                                 "TOPE" in col_indices
