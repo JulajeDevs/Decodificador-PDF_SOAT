@@ -7,7 +7,6 @@ import pdfplumber
 import pandas as pd
 import streamlit as st
 
-# Cargar tipos de documentos
 
 try:
     identificacion = pd.read_excel("Tipo_Documentos.xlsx")
@@ -88,7 +87,19 @@ def limpiar_numero_poliza(valor_raw):
     return texto
 
 
-# --- FUNCIONES DE EXTRACCIÓN POR ASEGURADORA ---
+def estandarizar_resultado(data):
+    base = {
+        "Nombres y Apellidos": "No encontrado",
+        "Identificación": "No encontrado",
+        "Tipo Identificación": "No encontrado",
+        "Numero Poliza": "No encontrado",
+        "Placa": "No encontrado",
+        "Fecha Siniestro": "No encontrado",
+        "Estado Cobertura": "No encontrado",
+        "Cobertura": "No encontrado",
+        "Valor Pagado": "No encontrado",
+    }
+    return {**base, **(data or {})}
 
 
 def Mapfre(text):
@@ -430,7 +441,16 @@ def hdi(text):
 
 
 def indemnizaciones(text):
-    data = {}
+    data = {
+        "Nombres y Apellidos": "No encontrado",
+        "Identificación": "No encontrado",
+        "Tipo Identificación": "No encontrado",
+        "Numero Poliza": "No encontrado",
+        "Fecha Siniestro": "No encontrado",
+        "Estado Cobertura": "No encontrado",
+        "Cobertura": "No encontrado",
+        "Valor Pagado": "No encontrado",
+    }
 
     name_match = re.search(
         r"(?:La señora|El señor)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ ]+),\s*identificad[ao] con",
@@ -444,111 +464,322 @@ def indemnizaciones(text):
     id_match = re.search(
         r"Cédula de\s+Ciudadanía[\s\n]*([\d\.,]+)", text, re.IGNORECASE
     )
-    data["Identificacion"] = (
+    data["Identificación"] = (
         id_match.group(1).replace(".", "") if id_match else "No encontrado"
     )
+    if id_match:
+        data["Tipo Identificación"] = "CC"
 
     policy_match = re.search(r"POLIZA SOAT No\.\s*(\d+)", text, re.IGNORECASE)
     data["Numero Poliza"] = policy_match.group(1) if policy_match else "No encontrado"
 
-    no_present_match = re.search(
-        r"NO HA PRESENTADO PAGOS POR CONCEPTOS DE GASTOS MEDICOS", text, re.IGNORECASE
-    )
-    data["Concepto Gastos"] = (
-        "NO HA PRESENTADO GASTOS MÉDICOS" if no_present_match else "No encontrado"
-    )
-
     return data
 
 
-def bolivar(text):
-    data = {}
+def bolivar(text, pdf=None):
+    data = {
+        "Nombres y Apellidos": "No encontrado",
+        "Identificación": "No encontrado",
+        "Tipo Identificación": "No encontrado",
+        "Numero Poliza": "No encontrado",
+        "Cobertura": "No encontrado",
+        "Valor Pagado": "No encontrado",
+        "Estado Cobertura": "No encontrado",
+        "Fecha Siniestro": "No encontrado",
+    }
 
-    name_match = re.search(
-        r"([A-Z]{2,})\s+(\d+)\s+([A-ZÁÉÍÓÚÑ\s]+?)\s+\d{2}-\d{2}-\d{4}",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if name_match:
-        data["Nombres y Apellidos"] = name_match.group(3).strip()
-        data["Identificación"] = name_match.group(2).strip()
-        data["Tipo Identificación"] = name_match.group(1).strip()
-    else:
-        data.update(
-            {
-                "Nombres y Apellidos": "No Encontrado",
-                "Identificación": "No Encontrado",
-                "Tipo Identificación": "No Encontrado",
-            }
+    def _clean_cell(value):
+        if value is None:
+            return ""
+        return re.sub(r"\s+", " ", str(value)).strip()
+
+    def _normalize_header(value):
+        normalized = unicodedata.normalize("NFKD", _clean_cell(value).upper())
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        return re.sub(r"\s+", " ", normalized)
+
+    def _get_by_index(row, idx):
+        if idx is None or idx < 0 or idx >= len(row):
+            return ""
+        return _clean_cell(row[idx])
+
+    def _find_idx(headers, condition):
+        for idx, header in enumerate(headers):
+            if condition(header):
+                return idx
+        return None
+
+    def _format_money(value):
+        money_text = _clean_cell(value)
+        if not money_text:
+            return "No encontrado"
+
+        number_match = re.search(r"[\d][\d\.,]*", money_text)
+        if not number_match:
+            return "No encontrado"
+
+        digits = re.sub(r"[^\d]", "", number_match.group(0))
+        if not digits:
+            return "No encontrado"
+
+        return f"${int(digits):,}".replace(",", ".")
+
+    def _normalize_estado(value):
+        estado = _normalize_header(value)
+        if not estado:
+            return "No encontrado"
+
+        if "NO AGOTAD" in estado:
+            return "NO AGOTADO"
+        if "AGOTAD" in estado:
+            return "AGOTADO"
+        return estado
+
+    if pdf:
+        try:
+            victim_table_found = False
+            coverage_table_found = False
+            policy_table_found = False
+
+            for page in pdf.pages:
+                tables = page.extract_tables() or []
+
+                for table in tables:
+                    if not table:
+                        continue
+
+                    for row_idx, row in enumerate(table):
+                        if not row:
+                            continue
+
+                        headers = [_normalize_header(cell) for cell in row]
+
+                        idx_policy = _find_idx(
+                            headers,
+                            lambda h: "POLIZA" in h and "NUMERO" in h,
+                        )
+                        if idx_policy is not None and not policy_table_found:
+                            for candidate_row in table[row_idx + 1 :]:
+                                policy_value = _get_by_index(candidate_row, idx_policy)
+                                if policy_value:
+                                    data["Numero Poliza"] = policy_value
+                                    policy_table_found = True
+                                    break
+
+                        idx_doc = _find_idx(
+                            headers,
+                            lambda h: "IDENTIFICACION" in h and "ACCIDENTADO" in h,
+                        )
+                        idx_name = _find_idx(
+                            headers, lambda h: "NOMBRE" in h and "VICTIMA" in h
+                        )
+                        idx_date = _find_idx(
+                            headers, lambda h: "FECHA" in h and "ACCIDENTE" in h
+                        )
+
+                        if (
+                            idx_doc is not None
+                            and idx_name is not None
+                            and idx_date is not None
+                            and not victim_table_found
+                        ):
+                            for candidate_row in table[row_idx + 1 :]:
+                                doc_value = _get_by_index(candidate_row, idx_doc)
+                                name_value = _get_by_index(candidate_row, idx_name)
+                                date_value = _get_by_index(candidate_row, idx_date)
+                                if not (doc_value or name_value or date_value):
+                                    continue
+
+                                doc_match = re.search(
+                                    r"\b([A-Z]{2,})\s+([\d\.]+)\b", doc_value
+                                )
+                                if doc_match:
+                                    data["Tipo Identificación"] = doc_match.group(1)
+                                    data["Identificación"] = doc_match.group(2).replace(
+                                        ".", ""
+                                    )
+
+                                if name_value:
+                                    data["Nombres y Apellidos"] = re.sub(
+                                        r"\s+", " ", name_value
+                                    ).strip()
+
+                                date_match = re.search(
+                                    r"\d{2}[/-]\d{2}[/-]\d{4}", date_value
+                                )
+                                if date_match:
+                                    data["Fecha Siniestro"] = date_match.group(
+                                        0
+                                    ).replace("/", "-")
+
+                                victim_table_found = True
+                                break
+
+                        idx_cov = _find_idx(
+                            headers, lambda h: "VALOR DE COBERTURA" in h
+                        )
+                        idx_paid = _find_idx(headers, lambda h: "VALOR CANCELADO" in h)
+                        idx_status = _find_idx(headers, lambda h: h == "ESTADO")
+
+                        if (
+                            idx_cov is not None
+                            and idx_paid is not None
+                            and idx_status is not None
+                            and not coverage_table_found
+                        ):
+                            for candidate_row in table[row_idx + 1 :]:
+                                cov_value = _get_by_index(candidate_row, idx_cov)
+                                paid_value = _get_by_index(candidate_row, idx_paid)
+                                status_value = _get_by_index(candidate_row, idx_status)
+                                if not (cov_value or paid_value or status_value):
+                                    continue
+
+                                data["Cobertura"] = _format_money(cov_value)
+                                data["Valor Pagado"] = _format_money(paid_value)
+                                data["Estado Cobertura"] = _normalize_estado(
+                                    status_value
+                                )
+                                coverage_table_found = True
+                                break
+
+                    if (
+                        victim_table_found
+                        and coverage_table_found
+                        and policy_table_found
+                    ):
+                        break
+
+                if victim_table_found and coverage_table_found and policy_table_found:
+                    break
+        except Exception:
+            pass
+
+    if data["Nombres y Apellidos"] == "No encontrado":
+        name_match = re.search(
+            r"\b([A-Z]{2,})\s+([\d\.]+)\s+([A-ZÁÉÍÓÚÑ\s]+?)\s+(\d{2}-\d{2}-\d{4})",
+            text,
+            re.IGNORECASE | re.DOTALL,
         )
+        if name_match:
+            data["Tipo Identificación"] = name_match.group(1).strip().upper()
+            data["Identificación"] = name_match.group(2).replace(".", "").strip()
+            data["Nombres y Apellidos"] = re.sub(
+                r"\s+", " ", name_match.group(3)
+            ).strip()
+            data["Fecha Siniestro"] = name_match.group(4).strip()
 
-    policy_match = re.search(
-        r"(?:Póliza\s+Número.*?(\d{13,})|(?:No\.|numero)\s*(\d+))",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    data["Numero Poliza"] = policy_match.group(1) if policy_match else "No encontrado"
+    if data["Numero Poliza"] == "No encontrado":
+        policy_match = re.search(
+            r"(?:P[oó]liza\s+N[uú]mero.*?(\d{10,})|(?:No\.|numero)\s*(\d{10,}))",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if policy_match:
+            data["Numero Poliza"] = policy_match.group(1) or policy_match.group(2)
 
-    total_line_match = re.search(r"(\d+\.\d+)\s+\$\s+([\d.]+)\s+\$\s+([\d.]+)", text)
-    if total_line_match:
-        data["Cobertura"] = total_line_match.group(2)
-        data["Valor Pagado"] = total_line_match.group(3)
-    else:
-        data["Cobertura"] = "No encontrado"
-        data["Valor Pagado"] = "No encontrado"
+    if data["Cobertura"] == "No encontrado" or data["Valor Pagado"] == "No encontrado":
+        total_line_match = re.search(
+            r"(\d{1,3},\d{2})\s+\$\s*([\d\.]+)\s+\$\s*([\d\.]+)\s+\$\s*([\d\.]+)\s+(AGOTADO|NO\s+AGOTADO)",
+            text,
+            re.IGNORECASE,
+        )
+        if total_line_match:
+            data["Cobertura"] = _format_money(total_line_match.group(2))
+            data["Valor Pagado"] = _format_money(total_line_match.group(3))
+            if data["Estado Cobertura"] == "No encontrado":
+                data["Estado Cobertura"] = _normalize_estado(total_line_match.group(5))
 
-    try:
-        valor_pagado = int(data["Valor Pagado"].replace(".", ""))
-        cobertura = int(data["Cobertura"].replace(".", ""))
-        if valor_pagado >= cobertura:
-            data["Estado Cobertura"] = "AGOTADO"
+    if data["Estado Cobertura"] == "No encontrado":
+        status_match = re.search(
+            r"ESTADO\s+(AGOTADO|NO\s+AGOTADO)",
+            text,
+            re.IGNORECASE,
+        )
+        if status_match:
+            data["Estado Cobertura"] = _normalize_estado(status_match.group(1))
         else:
-            data["Estado Cobertura"] = "NO AGOTADO"
-    except:
-        data["Estado Cobertura"] = "No encontrado"
+            generic_status = re.search(
+                r"\b(NO\s+AGOTAD[AO]|AGOTAD[AO])\b",
+                text,
+                re.IGNORECASE,
+            )
+            if generic_status:
+                data["Estado Cobertura"] = _normalize_estado(generic_status.group(1))
 
-    match_date = re.search(r"Fecha Accidente.*?(\d{2}-\d{2}-\d{4})", text, re.DOTALL)
-    data["Fecha Siniestro"] = match_date.group(1) if match_date else "No encontrado"
+    if data["Fecha Siniestro"] == "No encontrado":
+        match_date = re.search(
+            r"Fecha Accidente.*?(\d{2}-\d{2}-\d{4})", text, re.DOTALL
+        )
+        if match_date:
+            data["Fecha Siniestro"] = match_date.group(1)
 
     return data
 
 
 def seg_mundial(text, pdf=None):
-    # Inicializar diccionario con formato estandarizado
+
     data = {
         "Nombres y Apellidos": "No encontrado",
         "Numero Poliza": "No encontrado",
+        "Placa": "No encontrado",
         "Fecha Siniestro": "No encontrado",
         "Estado Cobertura": "No encontrado",
         "Cobertura": "No encontrado",
         "Valor Pagado": "No encontrado",
-        "Identificación": "No encontrado",  # <-- Estandarizado
-        "Tipo Identificación": "No encontrado",  # <-- Estandarizado
+        "Identificación": "No encontrado",
+        "Tipo Identificación": "No encontrado",
     }
 
     found_in_table = False
+    text_lineal = re.sub(r"\s+", " ", text).strip()
 
-    # --- ESTRATEGIA 1: EXTRACCIÓN POR TABLAS (MEJORA) ---
+    def normalizar_estado_mundial(valor_raw):
+        valor = normalizar_texto_busqueda(valor_raw)
+        if not valor:
+            return "No encontrado"
+        if "NO AGOTAD" in valor:
+            return "NO AGOTADO"
+        if "AGOTAD" in valor:
+            return "AGOTADO"
+        return valor
+
+    def extraer_bloque_principal(texto):
+        return re.search(
+            r"Afectado\s+Amparo\s+Fecha\s+Poliza\s+Siniestro\s+Estado\s+Tope\s+Pagado\s+Saldo\s+Accidente\s+Disponible\s+en\s+Pesos\s+(.*?)\s+La\s+anterior\s+certificaci[oó]n",
+            texto,
+            re.IGNORECASE | re.DOTALL,
+        )
+
     if pdf:
         try:
             for page in pdf.pages:
-                tables = page.extract_tables()
+                tables = page.extract_tables() or []
 
                 for table in tables:
                     header_idx = -1
                     col_indices = {}
 
                     for i, row in enumerate(table):
-                        # Limpieza básica de la fila para buscar cabeceras
+
                         row_clean = [normalizar_texto_busqueda(c) for c in row]
 
-                        if "AFECTADO" in row_clean and "AMPARO" in row_clean:
+                        if any("AFECTADO" in cell for cell in row_clean) and any(
+                            "AMPARO" in cell for cell in row_clean
+                        ):
                             header_idx = i
-                            # Mapear columnas dinámicamente
+
                             try:
-                                col_indices["AFECTADO"] = row_clean.index("AFECTADO")
-                                col_indices["AMPARO"] = row_clean.index("AMPARO")
-                                # Buscar otras columnas aproximadas
+                                col_indices["AFECTADO"] = next(
+                                    idx
+                                    for idx, col_name in enumerate(row_clean)
+                                    if "AFECTADO" in col_name
+                                )
+                                col_indices["AMPARO"] = next(
+                                    idx
+                                    for idx, col_name in enumerate(row_clean)
+                                    if "AMPARO" in col_name
+                                )
+
                                 for idx, col_name in enumerate(row_clean):
                                     if "FECHA" in col_name and "ACCIDENTE" in col_name:
                                         col_indices["FECHA"] = idx
@@ -567,6 +798,7 @@ def seg_mundial(text, pdf=None):
                             break
 
                     if header_idx != -1:
+
                         def cargar_datos_desde_fila(row_data):
                             raw_name = row_data[idx_afectado]
                             if raw_name:
@@ -630,44 +862,96 @@ def seg_mundial(text, pdf=None):
                                     elif "AGOTADA" in val:
                                         data["Estado Cobertura"] = "AGOTADO"
                                     else:
-                                        data["Estado Cobertura"] = val
+                                        data["Estado Cobertura"] = (
+                                            normalizar_estado_mundial(val)
+                                        )
 
+                        fila_general = None
                         fila_transporte = None
+                        fila_gastos_medicos = None
 
                         for row in table[header_idx + 1 :]:
                             idx_afectado = col_indices.get("AFECTADO", 0)
                             idx_amparo = col_indices.get("AMPARO", 1)
 
+                            if not any(normalizar_texto_busqueda(cell) for cell in row):
+                                continue
+
                             if len(row) > idx_amparo:
                                 amparo_val = normalizar_texto_busqueda(row[idx_amparo])
+                                afectado_val = (
+                                    normalizar_texto_busqueda(row[idx_afectado])
+                                    if len(row) > idx_afectado
+                                    else ""
+                                )
+
+                                if not fila_general and (amparo_val or afectado_val):
+                                    fila_general = row
 
                                 if "GASTOS DE TRANSPORTE" in amparo_val:
                                     fila_transporte = row
 
                                 if "GASTOS MEDICOS" in amparo_val:
-                                    cargar_datos_desde_fila(row)
-                                    found_in_table = True
-                                    return data
+                                    fila_gastos_medicos = row
 
-                        if fila_transporte:
-                            cargar_datos_desde_fila(fila_transporte)
+                        fila_objetivo = (
+                            fila_gastos_medicos or fila_transporte or fila_general
+                        )
+
+                        if fila_objetivo:
+                            cargar_datos_desde_fila(fila_objetivo)
                             found_in_table = True
                             return data
         except Exception as e:
             pass
 
-    # --- ESTRATEGIA 2: REGEX (FALLBACK SI FALLA LA TABLA) ---
     if not found_in_table:
-
-        name_match = re.search(
-            r"Afectado\s+(?:Amparo\s+)?(?:Fecha\s+Accidente\s+)?(?:Póliza\s+)?(?:Siniestro\s+)?(?:Estado\s+)?(?:Tope\s+)?(?:Saldo\s+)?((?:[A-ZÁÉÍÓÚÑ]+\s*)+)\s+(?:Gastos|Amparo)",
-            text,
-            re.IGNORECASE | re.DOTALL,
+        bloque_match = extraer_bloque_principal(text)
+        bloque_principal = (
+            re.sub(r"\s+", " ", bloque_match.group(1)).strip() if bloque_match else ""
         )
-        if name_match:
-            data["Nombres y Apellidos"] = re.sub(
-                r"\s+", " ", name_match.group(1).strip()
+
+        if bloque_principal:
+            date_match = re.search(r"\b\d{2}/\d{2}/\d{4}\b", bloque_principal)
+            if date_match:
+                data["Fecha Siniestro"] = date_match.group(0).replace("/", "-")
+
+                prefijo = bloque_principal[: date_match.start()].strip()
+                if prefijo:
+                    data["Nombres y Apellidos"] = prefijo
+
+            policy_match = re.search(
+                r"\b\d{4}-\d{5,}(?:-\d+)?(?:\.\d+)?\b", bloque_principal
             )
+            if policy_match:
+                data["Numero Poliza"] = policy_match.group(0).strip()
+
+            valores_pesos = re.findall(
+                r"Pesos:\s*([\d\.,]+)|\$\s*([\d\.,]+)", bloque_principal, re.IGNORECASE
+            )
+            valores_limpios = [
+                next(filter(None, match)).strip()
+                for match in valores_pesos
+                if any(match)
+            ]
+            if valores_limpios:
+                data["Cobertura"] = extraer_valor_en_pesos(
+                    f"Pesos: {valores_limpios[0]}"
+                )
+            if len(valores_limpios) > 1:
+                data["Valor Pagado"] = extraer_valor_en_pesos(
+                    f"Pesos: {valores_limpios[1]}"
+                )
+
+            estado_match = re.search(
+                r"\b(NO\s+AGOTAD[AO]|AGOTAD[AO])\b",
+                bloque_principal,
+                re.IGNORECASE,
+            )
+            if estado_match:
+                data["Estado Cobertura"] = normalizar_estado_mundial(
+                    estado_match.group(1)
+                )
 
         policy_match = re.search(
             r"\d{2}/\d{2}/\d{4}\s+(\d{4}-\d{8}\.\d)", text, re.IGNORECASE
@@ -681,11 +965,7 @@ def seg_mundial(text, pdf=None):
             re.IGNORECASE,
         )
         if estado_match:
-            estado = estado_match.group(1).strip().upper()
-            if "AGOTADA" in estado and "NO" not in estado:
-                data["Estado Cobertura"] = "AGOTADO"
-            else:
-                data["Estado Cobertura"] = "NO AGOTADO"
+            data["Estado Cobertura"] = normalizar_estado_mundial(estado_match.group(1))
 
         if re.search(r"no\s+se\s+identifican\s+reclamaciones", text, re.IGNORECASE):
             data["Estado Cobertura"] = "SIN RECLAMACIONES"
@@ -696,6 +976,49 @@ def seg_mundial(text, pdf=None):
         if date_match:
             fecha = date_match.group(1).strip().replace("/", "-")
             data["Fecha Siniestro"] = fecha
+
+    if data["Placa"] == "No encontrado":
+        placa_match = re.search(
+            r"veh[ií]culo\s+de\s+placas?\s+([A-Z]{3}\d{3}|[A-Z]{3}\d{2}[A-Z])\b",
+            text_lineal,
+            re.IGNORECASE,
+        )
+        if placa_match:
+            data["Placa"] = placa_match.group(1).upper()
+
+    if data["Numero Poliza"] == "No encontrado":
+        policy_match = re.search(
+            r"p[oó]liza(?:\(s\))?(?:\s+SOAT)?(?:\s+No\.?)?(?:\s*[:\-])?\s+([A-Z0-9][A-Z0-9\-.]*\d[A-Z0-9\-.]*)\b",
+            text_lineal,
+            re.IGNORECASE,
+        )
+        if policy_match:
+            data["Numero Poliza"] = limpiar_numero_poliza(policy_match.group(1))
+        else:
+            generic_policy = re.search(
+                r"\b\d{4}-\d{5,}(?:-\d+)?(?:\.\d+)?\b", text_lineal
+            )
+            if generic_policy:
+                data["Numero Poliza"] = limpiar_numero_poliza(generic_policy.group(0))
+
+    if data["Fecha Siniestro"] == "No encontrado":
+        accident_date_match = re.search(
+            r"fecha\s+de\s+accidente\s+(\d{2}/\d{2}/\d{4})",
+            text_lineal,
+            re.IGNORECASE,
+        )
+        if accident_date_match:
+            data["Fecha Siniestro"] = accident_date_match.group(1).replace("/", "-")
+
+    if data["Identificación"] == "No encontrado":
+        doc_match = re.search(
+            r"documento\s+([A-Z]{2,})-(\d{5,15})",
+            text_lineal,
+            re.IGNORECASE,
+        )
+        if doc_match:
+            data["Tipo Identificación"] = doc_match.group(1).upper()
+            data["Identificación"] = doc_match.group(2)
 
     return data
 
@@ -1281,52 +1604,89 @@ def equidad(text):
     return data
 
 
-# --- PROCESAMIENTO PRINCIPAL ---
-
-
 def extract_data(text, pdf_file, pdf_obj=None):
     if re.search(r"MAPFRE SEGUROS GENERALES DE COLOMBIA", text, re.IGNORECASE):
         data = Mapfre(text)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "MAPFRE"}
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "MAPFRE",
+        }
     elif re.search(r"PREVISORA S.A.", text, re.IGNORECASE):
         data = previsora(text)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "PREVISORA S.A."}
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "PREVISORA S.A.",
+        }
     elif re.search(r"SURAMERICANA S.A", text, re.IGNORECASE):
         data = sura(text)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "SURA"}
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "SURA",
+        }
     elif re.search(
         r"HDI SEGUROS COLOMBIA|CERTIFICADO DE AGOTAMIENTO DE COBERTURA",
         text,
         re.IGNORECASE,
     ):
         data = hdi(text)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "HDI SEGUROS"}
-    elif re.search(r"LLAC", text, re.IGNORECASE):
-        data = indemnizaciones(text)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "LLAC"}
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "HDI SEGUROS",
+        }
     elif re.search(r"SEGUROS\s+BOLIVAR\b.*?S\.A\.", text, re.IGNORECASE | re.DOTALL):
-        data = bolivar(text)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "SEGUROS BOLIVAR"}
+        data = bolivar(text, pdf_obj)
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "SEGUROS BOLIVAR",
+        }
+    elif re.search(r"\bLLAC\b", text, re.IGNORECASE):
+        data = indemnizaciones(text)
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "LLAC",
+        }
     elif re.search(r"SEGUROS MUNDIAL", text, re.IGNORECASE):
-        # Pasamos el objeto PDF a Mundial para extracción de tablas
+
         data = seg_mundial(text, pdf_obj)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "SEGUROS MUNDIAL"}
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "SEGUROS MUNDIAL",
+        }
     elif re.search(r"AXA COLPATRIA SEGUROS", text, re.IGNORECASE):
         data = colpatria_axa(text)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "AXA COLPATRIA"}
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "AXA COLPATRIA",
+        }
     elif re.search(r"(?i)SEGUROS DEL ESTADO S\.A\.", text):
         data = seg_estados(text)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "SEGUROS DEL ESTADO"}
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "SEGUROS DEL ESTADO",
+        }
     elif re.search(r"ASEGURADORA SOLIDARIA DE COLOMBIA", text):
         data = solidaria(text, pdf_obj)
         return {
-            **data,
+            **estandarizar_resultado(data),
             "Nombre archivo": pdf_file,
             "Aseguradora": "ASEGURADORA SOLIDARIA",
         }
     elif re.search(r"EQUIDAD SEGUROS|LA COMPAÑÍA EQUIDAD SEGUROS", text, re.IGNORECASE):
         data = equidad(text)
-        return {**data, "Nombre archivo": pdf_file, "Aseguradora": "EQUIDAD SEGUROS"}
+        return {
+            **estandarizar_resultado(data),
+            "Nombre archivo": pdf_file,
+            "Aseguradora": "EQUIDAD SEGUROS",
+        }
     else:
         raise ValueError("No se pudo identificar nombre de SOAT")
 
@@ -1335,7 +1695,6 @@ def main():
     st.title("Procesador de PDFs SOAT (Completo y Optimizado)")
     st.write("Sube los archivos PDF para extraer la información")
 
-    # Widget para subir archivos
     uploaded_files = st.file_uploader(
         "Sube tus archivos PDF", type="pdf", accept_multiple_files=True
     )
@@ -1344,25 +1703,23 @@ def main():
         results = []
         errors = []
 
-        # Barra de progreso
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         for i, uploaded_file in enumerate(uploaded_files):
             try:
-                # Actualizar progreso
+
                 progress = (i + 1) / len(uploaded_files)
                 progress_bar.progress(progress)
                 status_text.text(
                     f"Procesando archivo {i+1} de {len(uploaded_files)}: {uploaded_file.name}"
                 )
 
-                # Mover el puntero al inicio
                 uploaded_file.seek(0)
+                pdf_bytes = uploaded_file.getvalue()
 
-                # Usar pdfplumber dentro del bucle y pasar el objeto al extractor
                 text = ""
-                with pdfplumber.open(uploaded_file) as pdf:
+                with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
                     for page in pdf.pages:
                         page_text = page.extract_text()
                         if page_text:
@@ -1374,11 +1731,9 @@ def main():
                         )
                         continue
 
-                    # Procesar el archivo pasando texto Y el objeto pdf
                     data = extract_data(text, uploaded_file.name, pdf)
                     results.append(data)
 
-                # Liberar memoria después de cada archivo pesado
                 if i % 10 == 0:
                     gc.collect()
 
@@ -1386,11 +1741,9 @@ def main():
                 st.warning(f"Error en {uploaded_file.name}: {str(e)}")
                 errors.append(uploaded_file.name)
 
-        # Mostrar resultados
         if results:
             df = pd.DataFrame(results)
 
-            # Normalizar formato de fechas a DD-MM-YYYY
             if "Fecha Siniestro" in df.columns:
                 df["Fecha Siniestro"] = df["Fecha Siniestro"].apply(
                     lambda x: (
@@ -1400,7 +1753,6 @@ def main():
                     )
                 )
 
-            # Normalizar Estado Cobertura
             if "Estado Cobertura" in df.columns:
 
                 def normalizar_estado(estado):
@@ -1415,16 +1767,13 @@ def main():
 
                 df["Estado Cobertura"] = df["Estado Cobertura"].apply(normalizar_estado)
 
-            # Mostrar vista previa
             st.subheader("Vista previa de los datos")
             st.dataframe(df)
 
-            # Generar archivo Excel
             output = BytesIO()
             with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
                 df.to_excel(writer, index=False, sheet_name="Datos SOAT")
 
-            # Botón de descarga
             st.download_button(
                 label="Descargar Excel",
                 data=output.getvalue(),
@@ -1435,7 +1784,6 @@ def main():
             if errors:
                 st.warning(f"Archivos con errores: {', '.join(errors)}")
 
-            # Resetear progreso
             progress_bar.empty()
             status_text.text("Proceso completado exitosamente!")
 
