@@ -894,12 +894,20 @@ def seg_mundial(text, pdf=None):
                                 if "GASTOS MEDICOS" in amparo_val:
                                     fila_gastos_medicos = row
 
+                        usar_transporte_sin_medicos = (
+                            fila_gastos_medicos is None and fila_transporte is not None
+                        )
                         fila_objetivo = (
                             fila_gastos_medicos or fila_transporte or fila_general
                         )
 
                         if fila_objetivo:
                             cargar_datos_desde_fila(fila_objetivo)
+                            if (
+                                usar_transporte_sin_medicos
+                                and fila_objetivo is fila_transporte
+                            ):
+                                data["Estado Cobertura"] = "NO AGOTADO"
                             found_in_table = True
                             return data
         except Exception as e:
