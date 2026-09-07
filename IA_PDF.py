@@ -121,6 +121,9 @@ def Mapfre(text):
 
     data["Tipo Identificación"] = "CC"
 
+    plate_match = re.search(r"veh[ií]culo\s+de\s+placa\s+([A-Z0-9]+)", text, re.IGNORECASE)
+    data["Placa"] = plate_match.group(1).upper() if plate_match else "No encontrado"
+
     policy_match = re.search(
         r"p[oó]liza\s+SOAT\s+expedida\s+por\s+(?:nuestra\s+aseguradora|nuestra\s+entidad)\s+bajo\s+el\s+n[uú]mero\s+(\d+)",
         text,
@@ -129,13 +132,12 @@ def Mapfre(text):
     data["Numero Poliza"] = policy_match.group(1) if policy_match else "No encontrado"
 
     total_paid_match = re.search(
-        r"(?:TOTAL|VALOR|TOTAL,)\s+(?:LIQUIDADO|PAGADO|CANCELADO|RECLAMADO)[^$]*\$\s*([\d\.,]+)",
+        r"(?:VALOR|TOTAL)\s+PAGADO\s+A\s+LA\s+FECHA[^$]*\$\s*([\d\.,]+)",
         text,
         re.IGNORECASE,
     )
     if total_paid_match:
-        valor = total_paid_match.group(1).replace(".", "").replace(",", "")
-        data["Valor Pagado"] = f"${int(valor):,}".replace(",", ".")
+        data["Valor Pagado"] = extraer_valor_en_pesos(total_paid_match.group(1))
     else:
         data["Valor Pagado"] = "No encontrado"
 
@@ -143,8 +145,7 @@ def Mapfre(text):
         r"TOPE\s+DE\s+COBERTURA[^$]+\$\s*([\d\.,]+)", text, re.IGNORECASE
     )
     if coverage_match:
-        cobertura = coverage_match.group(1).replace(".", "").replace(",", "")
-        data["Cobertura"] = f"${int(cobertura):,}".replace(",", ".")
+        data["Cobertura"] = extraer_valor_en_pesos(coverage_match.group(1))
     else:
         data["Cobertura"] = "No encontrado"
 
