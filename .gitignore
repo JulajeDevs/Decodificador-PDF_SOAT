@@ -11,6 +11,16 @@ env/
 __pycache__/
 *.py[cod]
 *.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Artefactos de empaquetado
+build/
+dist/
+*.egg-info/
 
 # Archivos de salida de Jupyter
 .ipynb_checkpoints/
