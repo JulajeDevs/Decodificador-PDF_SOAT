@@ -1,0 +1,48 @@
+# IMPORTANTE: no usar patrones tipo `.*` — excluirian `.streamlit/`, que es
+# imprescindible para que la app arranque con la configuracion correcta.
+# Deben entrar SIEMPRE en la imagen: .streamlit/config.toml y Tipo_Documentos.xlsx
+
+# Entorno virtual de Python
+venv/
+ENV/
+env/
+.venv/
+
+# Caches y artefactos de Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Git y metadatos del repositorio
+.git/
+.gitattributes
+.gitignore
+
+# Entornos de desarrollo
+.devcontainer/
+.vscode/
+.idea/
+
+# Ficheros de Docker (el builder los lee aparte)
+Dockerfile
+.dockerignore
+
+# Variables de entorno
+.env
+.env.*
+
+# Logs y temporales
+*.log
+*.bak
+*.tmp
+.DS_Store
+Thumbs.db
